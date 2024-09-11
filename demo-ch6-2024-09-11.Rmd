@@ -1,0 +1,1227 @@
+---
+title: "Demo: Bayesian Hierarchical Models (Draft Version)"
+author: "Paul Gustafson"
+date: "2024-09-11"
+output: pdf_document
+fontsize:  12pt
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r,include=F}
+require(knitr)
+```
+
+This R Markdown demo resides at [github.com/paulgstf/Bayes-demos](https://github.com/paulgstf/Bayes-demos)
+
+### The beginning
+
+```{r, echo=F}
+### global reproducibility of this demo
+set.seed(13)
+### some sanity in numerical output
+options(digits=3)
+```
+
+Consider a statistical problem where $Y_i \sim N(\theta_i, 1)$, 
+independently for $i=1, \ldots, 10$.
+<!-- -->
+So we can think of the data vector $Y=(Y_1, \ldots, Y_{10})$ estimating the parameter vector $\theta=(\theta_1, \ldots, \theta_{10})$.
+<!-- -->
+And we will use the phrasing of "units," in the sense that
+$\theta_i$ describes the unknown state of the $i$-th unit, with $Y_i$ being the observable
+quantity for said unit.
+
+
+For a particular value of $\theta$ we simulate 5000 independent realizations of the data vector $Y$:
+
+```{r, echo=F, message=F}
+require(MASS)
+```
+
+```{r}
+theta.tr <- seq(from=0.5, to=5, length=10)
+
+### each row of y.mat is a simulated realization of the data vector
+y.mat <- mvrnorm(5000, mu=theta.tr, Sigma=diag(10))
+```
+
+For this illustration, 
+the largest element of $\theta$ is $\theta_{10} = `r theta.tr[10]`$.
+<!-- -->
+But due to sampling variation,
+$Y_{10}$ may,
+or may not,
+be the largest element of $Y$.
+<!-- -->
+To pay some heed to the largest element,
+Let $M= M(Y)$ be its index.
+<!-- -->
+So formally $M= \mbox{argmax}_{i}\{Y_i\}$, 
+and $Y_M = \max_i\{Y_i\}$.
+<!-- -->
+In summarizing the $5000$ realizations of $M$,
+we see indeed that in almost half of the realizations it *isn't*
+the biggest element of $\theta$ that produces the biggest element of $Y$.
+
+```{r}
+### for each simulated data vector, determine M
+m <- t(apply(y.mat, 1, order))[,10]
+
+table(m)
+```
+
+Our next move is to examine the distribution,
+across our repeated sampling,
+of
+(i), 
+the error incurred by $Y_{10}$ as an estimator of $\theta_{10}$,
+and (ii),
+the error incurred by $Y_M$ as an "estimator" of $\theta_{M}$.
+<!-- -->
+Now (i) is well understood:
+this error is $Y_{10} - \theta_{10}$,
+which has mean zero and variance one with respect to repeated sampling of $Y$
+given $\theta$.
+<!-- -->
+However, 
+(ii) is more nuanced.
+<!-- -->
+The error is $Y_M - \theta_M$.
+<!-- -->
+But $\theta_M$, 
+in being a function of *both* the parameter vector $\theta$ and 
+the data vector $Y$,
+is not an estimand in the traditional sense (of being a function of parameters only).
+<!-- -->
+Nonetheless,
+we can examine how well the largest element of $Y$ estimates *the corresponding mean that spawned it,*
+which is exactly what $Y_M - \theta_M$ describes.
+
+
+```{r}
+par(mfrow=c(1,2))
+
+br <- seq(from=-8, to=8, by=0.4)
+hist(y.mat[,10]- theta.tr[10], 
+  xlab=expression(Y[10]-theta[10]), 
+  breaks=br, prob=T, main="", xlim=c(-4,4), ylim=c(0,0.5))
+
+hist(y.mat[cbind(1:5000,m)]- theta.tr[m],
+  xlab=expression(Y[M]-theta[M]), 
+  breaks=br, prob=T, main="", xlim=c(-4,4), ylim=c(0,0.5)) 
+```
+
+The left panel above simply provides empirical confirmation that 
+a $N(0,1)$ error is incurred when $Y_i$ estimates $\theta_i$,
+for $i=10$ 
+(or for that matter, 
+for any $i$).
+<!-- -->
+In contrast,
+the right panel
+shows a substantial positive bias when we conceive of $Y_{M}$ as an estimator of $\theta_{M}$.
+
+Upon reflection, 
+seeing $E(Y_{M}-\theta_{M}) > 0$ makes sense. 
+<!-- -->
+For any $j$, 
+$Y_j$ is more likely to become $Y_M = \max_{i} \{Y_i\}$ 
+if its realized error,
+$Y_j - \theta_j$,
+is positive.
+<!-- -->
+Across repeated sampling then, 
+$Y_M$ is more likely to fall above $\theta_M$,
+rather than below.
+
+Note that this narrative is focusing on the largest element of $Y$,
+for ease of explanation.
+<!-- -->
+Equally, 
+though,
+the smallest element of $Y$ will underestimate the mean that spawned it.
+<!-- -->
+And the phenomenon would carry over, 
+albeit less strongly,
+to larger and smaller elements of $Y$,
+not just *the* largest and *the* smallest.
+
+Notwithstanding the non-traditional sense of $\theta_M$ as an estimand of interest,
+we wonder if a bias like $E(Y_M-\theta_M) > 0$
+could have implications for good statistical estimation of 
+$\theta$ as a whole.
+<!-- -->
+The bias does cast doubt on the 
+*prima facie* thought that since the elements of $Y$ are independent of one another given $\theta$,
+the estimation of $\theta_i$ should be driven entirely by $Y_i$, 
+with $(Y_1, \ldots, Y_{i-1}, Y_{i+1}, \ldots, Y_{10})$
+being irrelevant for this purpose.
+<!-- -->
+Since observing that $Y_i$ is large relative to its peers suggests it is more likely an overestimate of $\theta_i$,
+we wonder if some commensurate tweak to our estimation 
+procedure is warranted?
+<!-- -->
+While (the vector) $Y=(Y_1,\ldots, Y_{10})$ is the obvious estimator of
+(the vector) $\theta=(\theta_1, \ldots, \theta_{10})$,
+could it be that something less obvious is actually better?
+
+
+
+
+
+
+
+
+
+### Bayesian analysis
+
+
+We posit that the path to betterment starts with bringing 
+a prior distribution to the table.
+<!-- -->
+A simple, conjugate prior would be $\theta_i \stackrel{\mbox{iid}}{\sim} N(\mu, \tau^2)$.
+<!-- -->
+Presuming $\mu$ and $\tau$ to be *hyperparameters* 
+(i.e., the user specifies values for them), 
+our posterior distribution for $(\theta|Y=y)$ has independent and normal components,
+with
+
+\begin{align}
+E(\theta_i | y, \mu, \tau^2) &=  \frac{\tau^2}{1+\tau^2} y_i + \frac{1}{1+\tau^2}  \mu, \label{first-mean} \\
+Var(\theta_i | y, \mu, \tau^2) &=  \frac{\tau^2}{1+\tau^2}.
+\nonumber
+\end{align}
+
+Here the posterior mean of $\theta_i$,
+which we regard as an estimator of $\theta_i$,
+is a convex combination of the datapoint $y_i$ and the prior mean $\mu$.
+<!--  -->
+And a pleasing intuition is that for this combination,
+the weight given to the datapoint decreases as the prior variance $\tau^2$ decreases.
+<!--  -->
+A common and useful phrasing would be that the estimate of $\theta_i$ is "shrunk" toward the prior mean $\mu$,
+with the amount of "shrinkage" governed by the strength of prior assertion,
+i.e., more shrinkage when $\tau$ is smaller.
+
+Taking stock,
+a user-provided assertion about the way in which the components of $\theta_i$ are similar to one another somehow binds together the ten inferential tasks of
+estimating the ten elements of $\theta$.
+<!-- -->
+This path becomes more useful,
+however,
+if we *let the data speak* about the extent to which the components of $\theta_i$ are similar.
+<!-- -->
+This is achieved by treating $\mu$ and $\tau$ as *unknown parameters* rather than known hyperparameters.
+<!-- -->
+The ensuing construct is often referred to as a *hierarchical model*,
+since the specification is made in stages: 
+first we describe the uncertainty about $Y$ given $\theta$,
+followed by the uncertainty about $\theta$ given $(\mu, \tau)$,
+and then finally the uncertainty about $(\mu, \tau)$.
+<!-- -->
+More formally,
+with $I$ observations (so $I=10$ in our running example), 
+the joint posterior distribution of all unknown parameters takes the form
+
+\begin{align}  \label{jointpost}
+f(\theta, \mu, \tau | y) & \propto 
+\left\{ \prod_{i=1}^{I} f(y_i|\theta_i) \right\}
+\left\{ \prod_{i=1}^{I} f(\theta_i|\mu, \tau) \right\}
+f(\mu,\tau),
+\end{align}
+
+where the last term is a prior density for $(\mu,\tau)$.
+<!-- -->
+While terminology can vary,
+we will refer to $\theta$ 
+as first-stage parameters,
+and $(\mu,\tau)$
+as second-stage parameters.
+
+
+
+Using this joint posterior on $(\theta, \mu,\tau)$, 
+we can 
+do inference as per the usual recipe.
+<!-- -->
+For instance, 
+the posterior mean $E(\theta_i|Y=y)$ is an obvious point estimator
+for $\theta_i$.
+<!-- -->
+In terms of 
+computing posterior quantities,
+we go the Monte Carlo route,
+since (\ref{jointpost}) doesn't quite have a closed-form representation.
+<!-- -->
+But we gain some closed-form insight by leaning on (\ref{first-mean}), 
+and the law of iterated expectations,
+to arrive at:
+
+\begin{align*}
+E(\theta_i|Y=y) &=  \left(1-\hat{b}\right) \hat{a} + \hat{b} y_i,
+\end{align*}
+
+where
+
+\begin{align}
+\hat{a} &= \frac{ E \left\{ \mu (1+\tau^2)^{-1} | Y=y \right \} }
+              { E \left\{ (1+\tau^2)^{-1} | Y=y \right \} }, \label{defa} \\
+\hat{b} &= 1 - E \left\{ (1+\tau^2)^{-1} | Y=y \right \}. \label{defb}               
+\end{align}              
+              
+To be clear, 
+here $\hat{a}$ and $\hat{b}$ are sample statistics depending on all elements of
+$y$,
+as formed by expectations with respect to the marginal posterior distribution of $(\mu,\tau)$ given $Y=y$.
+<!-- -->
+Via $\hat{a}$ and $\hat{b}$, 
+the data decide how much 
+to tweak from $y_i$ to a presumed better estimate of $\theta_i$.
+<!-- -->
+Note from the form of (\ref{defa}) that $\hat{a}$ can be regarded
+as (an admittedly convoluted) posterior estimate of $\mu$,
+<!-- -->
+Note from the form of (\ref{defb}) that $\hat{b}$ will necessarily be between zero and one.
+<!-- -->
+Indeed then,
+the posterior means of $\theta$ arise from shrinking 
+the components of $y$ toward an estimate of $\mu$.
+<!-- -->
+Since this estimate of $\mu$ is based on the data from all the units,
+it is common to refer to "borrowing-of-strength."
+<!-- -->
+That is, we "borrow" information from the other units,
+in order to give a more refined estimate of $\theta_i$ for the $i$-th unit.
+<!-- -->
+Moreover,
+noting that $y_i - E(\theta_i|Y=y) = (1-\hat{b})(y_i - \hat{a})$,
+the magnitude of the additive shift is proportional to 
+$|y_i - \hat{a}|$,
+i.e., the more outlying elements of $y$ are shrunk more.
+
+Under the hood, 
+we write an R function to generate a Monte Carlo sample from 
+(\ref{jointpost}).
+(Under the hood meaning we won't dwell on all the details here, 
+but the function is available in the code generating this report.)
+<!-- -->
+In brief,
+this function, 
+**posterior.A()**, 
+takes the data vector $y$ and the choice of prior density $p(\mu,\tau)$ as inputs.
+<!-- -->
+It then provides a sample of user-specified size as output.
+<!-- -->
+To say slightly more,
+it turns out we can draw exact Monte Carlo samples from a very good approximation to the posterior distribution,
+and we can use *importance weighting* to correct for the discrepancy between this approximation and the actual posterior distribution.
+
+```{r, echo=F}
+posterior.A <- function(y, m=100000, lg.pri.jnt) {  
+
+  n <- length(y); y.bar <- mean(y); ss <- sum((y-y.bar)^2)
+   
+  ### draw from density proportional to likelihood (mu, tau.2)
+   
+  ### draw tau.2 from truncated/shifted IG
+  tau.2.mc <- (ss/2) / qgamma(runif(m, 0, pgamma(ss/2, shape=(n-3)/2)), shape=(n-3)/2) - 1
+  
+  ### draw mu|tau.2 from normal
+  mu.mc <- rnorm(m, mean=y.bar, sd=sqrt((1+tau.2.mc)/n))
+
+  ### draw theta|mu,tau.2
+  
+  ### start with matrix of posterior means
+  theta.mc <- (1-1/(1+tau.2.mc)) %*% t(y) + mu.mc/(1+tau.2.mc)
+  ### then add the noise
+  theta.mc <- theta.mc + matrix(rnorm(m*n),m,n) *sqrt(1-1/(1+tau.2.mc))
+  
+  ### check math for importance weights as function of specified prior
+  
+  ### sampling wrt to (mu, tau.2), but lg.pri.jnt for (mu,tau), hence Jacobian term
+  imp.wht <- lg.pri.jnt(mu.mc, sqrt(tau.2.mc)) - 0.5*log(tau.2.mc) 
+  imp.wht <- imp.wht - max(imp.wht)
+  imp.wht <- exp(imp.wht)
+  imp.wht <- imp.wht/sum(imp.wht)
+  
+  ### for simplicity, going to take a resample of ESS draws
+  ### PRO: user can treat these as an iid sample from the posterior
+  ### CON: not directly controlling sample size
+  
+  rsmp <- sample(1:m, prob=imp.wht, replace=T, size=round(1/sum(imp.wht^2)))
+  
+  list(mu=mu.mc[rsmp], tau=sqrt(tau.2.mc[rsmp]), theta=theta.mc[rsmp,],
+    ess=length(rsmp)) 
+}
+```
+
+In the following example analysis we use a prior distribution for
+$(\mu,\tau)$ with independent components $\mu \sim N(0,10^2)$ and 
+$\tau \sim \mbox{Exponential}(0.1)$.
+<!-- --->
+These can be regarded as being very weakly informative.
+<!-- -->
+To wit,
+note that the rate parameter of $0.1$ would imply only about a twofold decline in prior density when contrasting a tenfold change from $\tau=1$ to $\tau=10$.    
+<!-- -->
+We encode this prior specification as an R function which can be given as an argument to **posterior.A()**.
+
+
+```{r}
+### log prior density for mu,tau jointly
+
+lg.pri.jnt <- function(mu, tau, mn.mu=0, sd.mu=10, rt.tau=0.1) {
+  dnorm(mu, mean=mn.mu, sd=sd.mu, log=T) +
+  dexp(tau, rate=rt.tau, log=T)  
+} 
+
+### for later purposes, log prior density for tau marginally
+lg.pri.tau <- function(tau, rt.tau=0.1) {
+  dexp(tau, rate=rt.tau, log=T)  
+###
+}
+```
+
+We illustrate the inferential scheme using a data vector simulated under the same parameter values used earlier, i.e., 
+$\theta = (`r theta.tr`)$.
+
+
+```{r}
+theta.tr <- seq(from=0.5, to=5, length=10)
+set.seed(17)
+y.test <- rnorm(10, mean=theta.tr)
+
+round(y.test,2)
+```
+
+We compute a joint posterior over $(\theta, \mu, \tau)$ given the data $Y=y$:
+
+```{r}
+ans.test <- posterior.A(y.test, lg.pri.jnt=lg.pri.jnt)
+```
+
+To underscore that we now "possess" the joint posterior
+distribution of $(\theta, \mu,\tau)$, 
+here are a few of the resultant bivariate marginal distributions:
+
+```{r, echo=F}
+thin <- function(x, spc=100) {
+  x[seq(from=1, to=length(x), by=spc)]
+}
+```
+
+```{r, echo=F}
+par(mfrow=c(2,2))
+plot(thin(ans.test$mu), thin(ans.test$tau), pch=".",
+  xlab=expression(mu), ylab=expression(tau))
+plot(thin(ans.test$mu), thin(ans.test$theta[,3]), pch=".",
+  xlab=expression(mu), ylab=expression(theta[3]))
+plot(thin(ans.test$mu), thin(ans.test$theta[,7]), pch=".",
+  xlab=expression(mu), ylab=expression(theta[7]))
+plot(thin(ans.test$theta[,3]), thin(ans.test$theta[,7]), pch=".",
+  xlab=expression(theta[3]), ylab=expression(theta[7]))
+graphics.off()
+```
+
+More pointedly, our MC output applied to (\ref{defa}) and (\ref{defb}) gives:
+
+```{r}
+b.hat <- 1-mean(1/(1+ans.test$tau^2))
+a.hat <- mean(ans.test$mu/(1+ans.test$tau^2))/(1-b.hat)
+
+c(a.hat, b.hat)
+```
+
+Then as a sanity check, note we actually have two routes to
+calculating $E(\theta_i|y)$,
+so its worth checking they agree:
+
+```{r}
+post.mean <- a.hat + b.hat*(y.test-a.hat)
+
+### alternatively, just use the MC draws for theta
+post.mean.alt <- apply(ans.test$theta,2,mean)
+
+### should agree to within numerical error
+summary(abs(post.mean.alt - post.mean))
+```
+
+To see the shrinkage effect in action,
+we plot the posterior means against the elements of $y$,
+with unit labels indicated, 
+and with the identity line displayed for reference.
+
+```{r}
+plot(y.test, post.mean,
+     xlim=range(y.test)+0.5*c(-1,1),
+     ylim=range(y.test)+0.5*c(-1,1),
+     xlab=expression(y[i]), ylab= expression(E(paste(theta[i],"|",Y==y))))
+
+ofst <- 0.7*c(rep(1,5),rep(-1,5))
+text(y.test,  a.hat+b.hat*(y.test-a.hat) + ofst, as.character(1:10), 
+     cex=0.7, col="grey")
+abline(c(0,1), lty=3)
+```
+
+In looking at the above plot, 
+we see the downward/upward shrinkage for units with large/small values of $y_i$.
+<!-- -->
+But because we simulated the data vector,
+we can go one step further and see if this shrinkage has helped.
+<!-- -->
+On aggregate, 
+are the posterior means of $(\theta | Y=y)$ indeed closer to their targets than are the elements of $Y$ themselves?
+<!-- -->
+Taking the square root of the average (of the ten) estimates as the typical error incurred,
+we see a typical error of 
+`r sqrt(mean((y.test - theta.tr)^2))`
+for $y_i$ as an estimate of $\theta_i$,
+compared to 
+a typical error of 
+`r sqrt(mean((post.mean - theta.tr)^2))`
+for $E(\theta_i|Y=y)$ as an estimate of $\theta_i$.
+<!-- -->
+This `r round(100*(1-sqrt(mean((post.mean - theta.tr)^2))/sqrt(mean((y.test - theta.tr)^2))))`% reduction in error is very promising.
+<!-- -->
+Though of course we shouldn't get too carried away by what happens for any one particular data vector.
+
+Now let's take a look at interval estimation, both with, 
+and without, 
+shrinkage.
+<!-- -->
+For the former,
+$0.05$ and $0.95$ 
+quantiles of the marginal posterior distribution of $(\theta_i|Y=y)$ form 
+a 90\% (equal-tailed) credible interval for $\theta_i$.
+<!-- -->
+For the latter,
+treating our ten inference problems as unrelated
+suggests $y_i \pm 1.645$ as a 90\% confidence interval for $\theta_i$.
+<!-- -->
+(As a bit of a rabbit hole here,
+we could also motivate $y_i \pm 1.645$ as a 90\% credible interval for $\theta_i$ if
+(i), 
+we only observe $Y_i$,
+not $Y$,
+and 
+(ii),
+the prior for $\theta_i$ is maximally wide,
+in a sense.
+<!-- -->
+Framed this way, 
+we can focus in on the difference between using all of $Y$,
+or just $Y_i$,
+when estimating $\theta_i$.)
+
+
+```{r}
+### equal-tailed 90% credible intervals
+int.90.Bayes <- apply(ans.test$theta, 2, quantile, probs=c(0.05, 0.95))
+
+### frequentist 90% credible intervals
+int.90.freq <- rbind(y.test - 1.645, y.test + 1.645)
+```
+
+```{r}
+jtr <- 0.03
+plot(theta.tr-jtr, y.test, pch=16, col="grey", ylim=c(-3,8),
+     xlab=expression(paste(true,phantom(0),theta)), ylab="90% Interval")
+points(theta.tr+jtr, a.hat + b.hat*(y.test-a.hat), pch=15)
+
+for (i in 1:10) {
+  points(rep(theta.tr[i]+jtr,2), int.90.Bayes[,i], type="l",lwd=1.5)
+  points(rep(theta.tr[i]-jtr,2), int.90.freq[,i], col="grey",type="l", lwd=1.5)
+}
+
+abline(c(0,1),lty=3, col="red")
+```
+
+```{r, echo=F}
+width.ratio <- (int.90.Bayes[2,] - int.90.Bayes[1,]) /
+               (int.90.freq[2,]  - int.90.freq[1,])
+```
+
+For the (unshrunk) frequentist 90% confidence intervals,
+depicted in grey in the above plot,
+we know the number of the intervals that miss their target with be distributed 
+as $\mbox{Binomial}(10,0.1)$.
+<!-- -->
+As luck has it, 
+for this realization of the data vector the number of misses is
+`r sum(int.90.freq[1,] > theta.tr) + sum(int.90.freq[2,] < theta.tr)`.
+<!-- -->
+Also as luck dictates, 
+the number of misses we happen to see for the (shrunk) Bayesian intervals is
+`r sum(int.90.Bayes[1,] > theta.tr) + sum(int.90.Bayes[2,] < theta.tr)`.
+
+From the figure,
+we see that the Bayesian credible intervals are narrower than their 
+frequentist counterparts.
+<!-- -->
+This makes sense in that the latter can be (roughly) thought of as credible intervals for
+$(\theta_i|Y_i=y_i)$,
+whereas the former are,
+by construction,
+credible intervals for $(\theta_i|Y=y)$.
+<!-- -->
+By using more data,
+we have more knowledge.
+<!-- -->
+In fact,
+the ratio of interval widths (shrunk to unshrunk) ranges from 
+`r min(width.ratio)` 
+(for unit `r which.min(width.ratio)`)
+to
+`r max(width.ratio)` 
+(for unit `r which.max(width.ratio)`).
+<!-- -->
+While we should resist the temptation to 
+"read too much" into 
+what happens for a particular data vector,
+the
+reduction in interval widths,
+plus the aforementioned reduction
+in estimation error,
+are teasingly appealing!
+
+
+
+### A modest extension: Datapoints of varying precision
+
+We have started with a very simple sandbox in which to explore shrinkage, 
+particularly in assuming that for each of $I$ units, 
+$Y_i$ arises from its underlying mean $\theta_i$
+via a known amount of normal variation, 
+with this amount being the same for each unit.
+<!-- -->
+In practice, 
+it is very easy to imagine situations where some datapoints are more precise than others,
+which we represent with
+$Y_i \sim N(\theta, \sigma^{2}_i)$, 
+with $\sigma_i$ known.
+
+
+Under the hood we provide a function **posterior.B()** to handle this modest extension.
+<!-- -->
+In brief,
+whereas previously we could leverage importance sampling to draw Monte Carlo realizations from the posterior
+of $(\mu,\tau,\theta)$, 
+now we have to fuss slightly more.
+<!-- -->
+With unequal $\sigma_i$
+we can obtain a closed-form
+expression for the posterior marginal density of $\tau$, 
+but this expression does not correspond to 
+a standard distribution.
+<!-- -->
+Hence we evaluate the expression on a fine grid, 
+in order to draw Monte Carlo samples of $(\tau|Y=y)$.
+<!-- -->
+After this we can draw from $(\mu|\tau,y)$ 
+and $(\theta|\mu,\tau,y)$,
+both of which are normal distributions.
+
+An obvious test of our coding is that output of **posterior.B()** applied to a problem with equal variances needs to match the output of **posterior.A()**, up to some numerical tolerance. 
+
+```{r,echo=F}
+
+posterior.B <- function(y, sig, mn.mu, sd.mu, tau.upr, tau.sz=5000, m=20000, lg.pri.tau) {
+  
+  ## y: vector of datapoints
+  ## sig: vector of (known) SD(y)
+  ## tau.rng: approximate marginal posterior of tau (not tau.2) 
+  ##          with even-spaced grid of tau.sz on this range
+  ## function returning (unnormalized) log prior density on tau     
+  
+  ## grid must start at "epsilon", not zero
+  tau.grd <- seq(from=0, to =tau.upr, length=tau.sz+1)[-1]
+  tau.spc <- tau.grd[2]-tau.grd[1]
+  
+  k <- length(y)
+  
+  ### coefficients for quadratic terms
+  ### vector * matrix, vector + matrix operates row-wise on matrix
+  
+  tmp1 <- 1/(sig^2 + matrix(tau.grd^2, nrow=k, ncol= tau.sz, byrow=T))
+
+  tmp2 <- y * tmp1
+  
+  tmp3 <- (y^2) * tmp1
+  
+  cf.a <- 1/(sd.mu^2) + apply(tmp1, 2, sum)
+  
+  cf.b <- mn.mu/(sd.mu^2) + apply(tmp2, 2, sum)
+  
+  cf.c <- (mn.mu^2)/(sd.mu^2) + apply(tmp3, 2, sum)
+  
+  tau.log.pst <- lg.pri.tau(tau.grd) + 
+                 0.5*apply(log(tmp1), 2, sum) +
+                 (-0.5)*log(cf.a) +
+                 (-0.5)*(cf.c - cf.b^2/cf.a)
+
+  ### normalize
+  tmp <- tau.log.pst - max(tau.log.pst)
+  tmp <- exp(tmp)
+  tau.pst <- tmp/sum(tmp)
+
+  tau.mc <- sample(tau.grd, size=m, prob=tau.pst, replace=T)
+  
+  ### for cosmetic purposes (for scatterplots), add jitter
+  tau.mc <- tau.mc + runif(m, -tau.spc/2, tau.spc/2)
+  
+  mu.mc <- rep(NA, m); theta.mc <- matrix(NA, m, k)
+  
+  
+  for (i in 1:m) {
+    prc <- sum(1 / c(sd.mu^2, sig^2 + tau.mc[i]^2) )
+    mn  <- sum( c(mn.mu, y) / c(sd.mu^2, sig^2 + tau.mc[i]^2) ) / prc
+    mu.mc[i] <- rnorm(1, mean=mn, sd=1/sqrt(prc))
+    
+    prc <- 1/tau.mc[i]^2 + 1/sig^2
+    mn <- (mu.mc[i]/tau.mc[i]^2 + y/sig^2)/prc 
+    theta.mc[i,] <- rnorm(k, mean=mn, sd=1/sqrt(prc))   
+  }
+  
+  
+  
+  list(tau=tau.mc, mu=mu.mc, theta=theta.mc,
+    tau.grd=tau.grd, tau.pst=tau.pst)
+}
+
+```
+
+```{r}
+ans.check <- posterior.B(y=y.test, sig=rep(1,length(y.test)), 
+                         mn.mu=0, sd.mu=10, tau.upr=50, 
+                         lg.pri.tau=lg.pri.tau)
+```
+
+
+If all is working well,
+both functions are providing draws from the same (posterior) distribution.
+<!-- -->
+So frequentist hypothesis tests applied to the Monte Carlo output should not find evidence to the contrary.
+
+
+```{r}
+### for instance, should not detect a difference in terms of the 
+### mean of the marginal posterior distribution of tau
+
+t.test(ans.test$tau, ans.check$tau)[c("statistic","p.value")]
+```
+
+```{r}
+### for instance, should not detect a difference in terms of the 
+### mean of the marginal (posterior) distribution of theta[3]
+
+t.test(ans.test$theta[,3], ans.check$theta[,3])[c("statistic","p.value")]
+```
+
+
+### Application to meta-analysis
+
+We can employ our hierarchical model in the task of *meta-analysis*.
+<!-- -->
+Here the task is to analyze a set of medical studies as a whole,
+rather than one-by-one.
+<!-- -->
+As an example,
+we take data from $I=17$ randomized trials 
+examining post-operative survival of patients with malignant gliomas.
+<!-- -->
+Specifically, each trial
+randomizes patients to either radiotherapy alone (the "control" group/arm) or radiotherapy plus adjuvant chemotherapy (the "experimental" or "treatment" or "active treatment" group/arm).
+<!-- -->
+
+```{r, eval=F}
+### For more background and references for these data:
+
+require("metadat")
+help(dat.fine1993)
+```
+
+```{r, echo=F, results="hide", mesage=F}
+require("metadat")   ### since previous snippet not executed
+```
+As notation,
+we take the number of patients in the $j$-th arm of the 
+$i$-th trial to be $m_{ij}$, with $j=0$ and $j=1$ representing control and treatment respectively.
+<!--  -->
+And we observe $V_{ij}=v_{ij}$ out of the $m_{ij}$ patients to experience the outcome event, which in our example is survival beyond 12 months post-surgery:
+
+
+
+```{r}
+### wrangling the data into our notation
+
+dat <- data.frame(
+  m0=dat.fine1993$nci, v0=dat.fine1993$c2i,
+  m1=dat.fine1993$nei, v1=dat.fine1993$e2i)
+
+num.studies <- dim(dat)[1]
+
+dat
+```
+
+The starting point for meta-analysis
+is to regard the $i$-th trial data as drawn from its own population,
+with its own *treatment effect* as the target parameter.
+<!-- -->
+We take this target $\theta_i$ to be the *log-odds-ratio* describing the association between 
+being on active treatment (rather than control) and experiencing the outcome event (versus not).
+<!-- -->
+It is generally plausible that the 
+treatment effects will be *similar*, 
+but *not identical*, 
+across trials.
+<!-- -->
+(Identical is generally quite a stretch.
+Inevitably,
+different trials of the same therapy will have 
+somewhat different clinical protocols, 
+and will be drawing patients from different
+geographic populations.)
+<!-- -->
+So completing the hierarchical model specification 
+by presuming $\theta_i \sim N(\mu, \tau^2)$,
+with $\mu$ and $\tau$ unknown,
+fits the bill.
+<!-- -->
+We regard $\mu$ as a "typical" treatment effect across study populations,
+which indeed will be *a priori* unknown.
+<!-- -->
+And then $\tau$ describes the across-study variation in treatment effect,
+which is also unknown *a priori*.
+
+A first-principles approach would be to consider the $i$-th trial data as a pair of binomial observations.
+<!-- -->
+<!--
+As notation, 
+say there are $V_{ji}$ outcome events amongst $m_{ji}$ patients,
+for the control ($j=0$) and active treatment ($j=1$) arms of the $i$-th trial.
+-->
+<!-- -->
+To pursue this formulation,
+in addition to parameters $\theta$ describing the study-specific treatment effects,
+we would need parameters, 
+say $\kappa$, 
+to describe the trial-specific outcome rates in control populations.
+<!-- -->
+Then given $\kappa$ and $\theta$,
+all the counts $V_{ij}$ could be viewed as mutually independent binomial observations
+of the form:
+
+\begin{align*}
+V_{0i} & \sim \mbox{binomial}\{m_{0i}, \mbox{expit}(\kappa_i)\}, \\
+V_{1i} & \sim \mbox{binomial}\{m_{1i}, \mbox{expit}(\kappa_i + \theta_i)\}. 
+\end{align*}
+
+It would be quite reasonable,
+and indeed recommended, 
+to integrate these binomial distributions directly into the hierarchical model 
+specification.
+<!-- -->
+For pedagogical purposes,
+however,
+we do something simpler,
+but still quite reasonable.
+<!-- -->
+It turns out 
+that the information about $\theta_i$ contained in the binomial counts $(V_{i0},V_{i1})$ is 
+very well approximated by the information about $\theta_i$
+contained in $Y_i$, 
+presuming $Y_i \sim N(\theta_i, \sigma^2_i)$,
+where
+\begin{align*}
+Y_i &= \mbox{logit}(V_{1i}/m_{1i}) - \mbox{logit}(V_{0i}/m_{0i}),
+\end{align*}
+and
+the (presumed) known value of $\sigma^2_i$ is taken to be
+\begin{align} \label{recip-counts}
+\sigma^{2}_{i} =  
+\frac{1}{v_{0i}} + \frac{1}{m_{0i} - v_{0i}} +
+\frac{1}{v_{1i}} + \frac{1}{m_{1i}  - v_{1i}}.
+\end{align}
+In applied statistics parlance,
+$Y_i$ is the sample log-odds-ratio from trial $i$,
+while $\sigma_i$ is the corresponding standard error.
+<!-- -->
+Note that we now have a version of our problem which exactly matches the "varying 
+precision" version of our simple hierarchical model.
+<!-- -->
+And we know this model will produce an inference about
+$\theta_i$  (the population treatment effect underlying the $i$-th clinical trial) which will depend on the summarized $Y$ data from all the trials,
+not just the $i$-th trial.
+
+
+
+
+
+As a sidebar for those interested,
+(\ref{recip-counts}) arises from a "delta-method" approximation.
+<!-- -->
+Its form, 
+as the sum of reciprocal cell counts
+from the $2 \times 2$ table cross-classifying the binary treatment and outcome 
+statuses, 
+is curious.
+<!-- -->
+Most particularly,
+the smallest of the four cell counts will be the weak link,
+making the largest (often by far) contribution to the estimated uncertainty of the 
+study-specific sample log-odds-ratio as an estimate of its population counterpart.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r, echo=F, message=F}
+### convenient package for logit()
+require("rje")
+```
+
+We can easily wrangle together the needed data vector $y$ and corresponding standard deviations $\sigma$:
+
+
+```{r}
+### data wrangling, each trial has a y[i] and sig[i]
+
+y.meta <- logit(dat$v1/dat$m1) - logit(dat$v0/dat$m0)
+
+sig.meta <- sqrt(1/dat$v0 + 1/(dat$m0-dat$v0) + 1/dat$v1 + 1/(dat$m1-dat$v1))
+```
+
+
+Now we are all set,
+as we have the inputs to produce the posterior distribution of $(\theta,\mu,\tau)$,
+which we obtain (again in the form a large Monte Carlo sample) as follows:
+
+
+```{r}
+ans.meta <- posterior.B(y=y.meta, sig=sig.meta, 
+                         mn.mu=0, sd.mu=10, tau.upr=1, 
+                         lg.pri.tau=lg.pri.tau)
+```
+
+
+As in our earlier example,
+we can look at both point and interval estimation, 
+both without, 
+and with, 
+shrinkage.
+<!-- -->
+To be clear,
+"with"
+involves the posterior mean and 90% equal-tailed credible interval
+for each $\theta_i$ based on the whole data vector $Y$.
+<!-- -->
+Whereas "without" takes $y_i$ as the point estimate of $\theta_i$
+and $y_i \pm 1.645 \sigma_i$ as the 90% (frequentist) interval estimate,
+as befits using only $Y_i$ when estimating $\theta_i$.
+
+
+
+
+```{r}
+pst.mn <- apply(ans.meta$theta, 2, mean)
+int.90 <- apply(ans.meta$theta, 2, quantile, probs=c(0.05, 0.95))
+```
+
+```{r}
+jtr <- 0.05
+plot(  1:num.studies - jtr, y.meta,   pch=16, col="grey", ylim=c(-2.2,3.7),
+       xlab="Study (i)", ylab=expression(theta[i]))
+points(1:num.studies + jtr, pst.mn, pch=15)
+
+for (i in 1:num.studies) {
+  points(rep(i + jtr,2), int.90[,i], type="l")
+  points(rep(i - jtr,2), y.meta[i]+1.645*sig.meta[i]*c(-1,1), col="grey",type="l")
+}
+
+```
+
+
+
+The figure reinforces earlier messages.
+<!-- -->
+We see shrinkage 
+(i), 
+moving estimates toward the "middle of the pack",
+and
+(ii),
+reducing interval width.
+<!-- -->
+But we also see an additional feature at play now.
+<!-- -->
+Some units,
+need, 
+and receive,
+considerably more help than others.
+<!-- -->
+Very intuitively,
+the units with less precise datapoints garner the greater interventions.
+<!-- -->
+That is,
+we tend to see a larger absolute shift, 
+$|y_i - E(\theta_i|Y=y)|$,
+when $\sigma_i$ is larger:
+
+
+```{r}
+plot(sig.meta, abs(pst.mn-y.meta), ylim=c(0,1),
+     xlab=expression(sigma[i]), ylab="Absolute Shift")
+
+jtr <- 0.1
+text(sig.meta, abs(pst.mn-y.meta) + jtr, as.character(1:num.studies),
+     cex=0.7, col="grey")
+
+```
+Note though that this relationship is only moderately strong. 
+<!-- -->
+Particularly,
+if the $i$-th unit has a "middle-ish" value of $y$, 
+then it won't see much of a shift,
+regardless of its corresponding precision.
+
+Turning to interval estimates,
+we find a stronger sense in which units with less precise datapoints receive more of an intervention.
+<!-- -->
+The shrunk interval width is a smaller fraction of
+the unshrunk interval width when $\sigma_i$ is larger: 
+
+
+```{r}
+plot(sig.meta, (int.90[2,]-int.90[1,])/(2*1.645*sig.meta), ylim=c(0,1),
+     xlab=expression(sigma[i]), ylab="Width Ratio")
+
+jtr <- 0.1
+text(sig.meta, (int.90[2,]-int.90[1,])/(2*1.645*sig.meta) - jtr, 
+     as.character(1:num.studies), cex=0.7, col="grey")
+
+```
+
+
+### Inference on second-stage parameters
+
+So far our discussion of borrowing of strength and shrinkage has been predicated on trying to learn about the first-stage (unit-specific) parameters $\theta=(\theta_1 , \ldots \theta_I)$.
+<!-- -->
+In application to meta-analysis,
+however,
+parameters $\mu$ and $\tau^2$ are generally of greater inferential interest.
+<!-- -->
+Foremost,
+since $\mu$ is regarded as the typical effect of treatment across different populations,
+inference about it is reported as a global summary of treatment efficacy.
+<!-- -->
+Secondarily,
+there is inherent interest in $\tau$ as the descriptor of treatment efficacy is across different populations.
+
+For the present glioma data, 
+we can visualize the bivariate posterior distribution 
+of $(\mu,\tau)$,
+along with the posterior mean and equal-tailed 90\% credible interval for each parameter:
+
+```{r, echo=F}
+plot(thin(ans.meta$tau,10), thin(ans.meta$mu,10), pch=".",
+     xlab=expression(tau), ylab=expression(mu))
+points(mean(ans.meta$tau), mean(ans.meta$mu), pch=19, col="blue", cex=2)
+points(rep(mean(ans.meta$tau),2), quantile(ans.meta$mu,c(0.05,0.95)), 
+       col="blue", lwd=2.5, type="l")
+points(quantile(ans.meta$tau, c(0.05, 0.95)), rep(mean(ans.meta$mu),2), 
+       col="blue", lwd=2.5, type="l")
+```
+
+With a point estimate for $\mu$ of $E(\mu|Y=y)=`r round(mean(ans.meta$mu),2)`$,
+along with the 90\% equal-tailed credible interval for $\mu$ running from
+`r round(quantile(ans.meta$mu,0.05),2)`
+to
+`r round(quantile(ans.meta$mu,0.95),2)`,
+we have evidence that the treatment is beneficial in a typical population.
+<!-- -->
+Note that we can also report inferences on the more interpretable odds-ratio scale.
+<!-- -->
+For instance,
+we simply exponentiate the endpoints of the credible interval for $\mu$,
+yielding 
+$(`r round(exp(quantile(ans.meta$mu,0.05)),2)`,`r round(exp(quantile(ans.meta$mu,0.95)),2)`)$
+as the 90\% equal-tailed credible interval for the typical odds ratio $e^{\mu}$.
+
+
+
+
+```{r, eval=F, echo=F}
+### pooled analysis
+tbl <- matrix(NA,2,2)
+tbl[1,1] <- sum(dat$m0-dat$v0)
+tbl[1,2] <- sum(dat$v0)
+tbl[2,1] <- sum(dat$m1-dat$v1)
+tbl[2,2] <- sum(dat$v1)
+
+lor.pool <- log(tbl[1,1]) + log(tbl[2,2]) - log(tbl[1,2]) - log(tbl[2,1]) 
+se.pool <- sqrt(sum(1/as.vector(tbl)))
+```
+
+<!--
+A feature of the bivariate posterior distribution for $(\mu,\tau)$ depicted above is a dependence,
+with the distribution of $(\mu|\tau)$ widening as $\tau$ increases.
+
+This is intuitive.
+
+A smaller $\tau$ supports more borrowing of strength across trials,
+which in turn promotes tighter inference about $\mu$.
+-->
+
+<!-- 
+As a sanity check: if we believed $\tau=0$,
+then we could pool the data from the studies together as if it were collected in a single, large trial.
+
+<!--
+Unsurprisingly,
+this matches well with the conditional posterior distribution of $(\mu|\tau=0)$ that
+we can roughly "read off" the above bivariate scatterplot.
+-->
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+A feature of the bivariate posterior distribution of $(\mu,\tau)$ depicted above 
+is a weak dependence, 
+whereby there is slightly more variation in $\mu$ when $\tau$ is larger.
+<!-- -->
+This is intuitive.
+<!-- -->
+Larger values of $\tau$ correspond to less commonality amongst the elements of $\theta$.
+<!-- -->
+In turn this reduces the extent of borrowing-of-strength,
+such than more uncertainty about $\mu$ remains.
+<!-- -->
+For the glioma data, however, this dependence is indeed quite weak, 
+since generally the posterior favors quite small values of $\tau$.
+
+<!-- -->
+To explore the posterior dependence between $\mu$ and $\tau$ in a situation where 
+it is more evident,
+we return to the earlier synthetic data vector (with $I=10$ elements) 
+used to illustrate the simpler case of equally-precise datapoints
+(known that $\sigma_i=1$ for all $i$).
+<!-- -->
+We examine the joint posterior distribution of $(\mu,\tau)$ for these data
+(again with posterior means and 90\% equal-tailed credible intervals given for reference):
+<!-- -->
+
+
+```{r, echo=F}
+plot(thin(ans.test$tau,10), thin(ans.test$mu,10), pch=".",
+     xlab=expression(tau), ylab=expression(mu))
+points(mean(ans.test$tau), mean(ans.test$mu), pch=19, col="blue", cex=2)
+points(rep(mean(ans.test$tau),2), quantile(ans.test$mu,c(0.05,0.95)), 
+       col="blue", lwd=2.5, type="l")
+points(quantile(ans.test$tau, c(0.05, 0.95)), rep(mean(ans.test$mu),2), 
+       col="blue", lwd=2.5, type="l")
+```
+
+In this case there is wider uncertainty about $\tau$,
+hence the posterior association between $\tau$ and $\mu$ is more evident.
+<!-- -->
+Note also that these data effectively rule out values of $\tau$ very close to zero.
+<!-- -->
+The data tell us that assuming a single common value for the elements of $\theta$ would
+be inappropriate.
+<!-- -->
+As a sanity check here,
+we momentarily probe the implications if we *did*
+make this assumption.
+<!-- -->
+A 90% frequentist confidence interval for the common mean
+would be $\bar{y} \pm 1.645 (1/10)^{1/2}$, which works out to be 
+$(`r round(mean(y.test)-1.645/sqrt(10),2)`,`r round(mean(y.test)+1.645/sqrt(10),2)`)$.
+<!-- -->
+This is considerably narrower than the 90\% equal-tailed credible interval based on the 
+posterior distribution of $(\mu|Y=y)$ depicted above,
+which happens to be
+$(`r round(quantile(ans.test$mu,0.05),2)`,`r round(quantile(ans.test$mu,0.95),2)`)$.
+<!-- -->
+Thus the hierarchical model analysis is guarding against overconfidence 
+that would arise from the pretense that all the datapoints arose from 
+the same underlying mean.
+<!-- -->
+As a related point, 
+by eyeballing the plot above we discern that the (overconfident) "fully pooled" interval estimate 
+of 
+$(`r round(mean(y.test)-1.645/sqrt(10),2)`,`r round(mean(y.test)+1.645/sqrt(10),2)`)$
+is roughly commensurate with what we can visualize for the 
+posterior distribution of $\mu$ conditioned on $\tau$ being close to zero.
+
+### Wrap-up
+
+Whether we are estimating first-stage or second-stage parameters,
+the hope is that the demonstrations above have whetted your appetite to learn more about Bayesian hierarchical models.
+<!-- -->
+The ideas of shrinkage and borrowing-of-strength are powerful,
+and can be employed in a multitude of statistical settings.
+<!-- -->
+And while there are non-Bayesian routes into combining data arising under similar but not identical circumstances,
+these can be "work" in terms of establishing frameworks and principles.
+<!-- -->
+In contrast, shrinkage and borrowing-of-strength fall out naturally and effortlessly 
+once a Bayesian hierarchical model has been specified.
+<!-- -->
+For a deeper dive on this,
+see Chapter 6 of
+*Bayesian Statistical Inference: Concepts, Hallmarks, and Operating Characteristics*.
+
+
+
+
+
